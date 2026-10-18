@@ -1,0 +1,159 @@
+# 静态库与动态库学习笔记
+
+> 2026-10-18 实操记录 · Ubuntu Linux + g++
+
+## 一、核心概念
+
+**库（Library）**：把写好的 `.cpp` 代码编译打包成可复用文件，别人不拿源码也能调用你的函数。
+
+| | 静态库 static library | 动态库 dynamic library（shared library） |
+|---|---|---|
+| 后缀 | `.a` (Linux/Mac)、`.lib` (Windows) | `.so` (Linux)、`.dylib` (Mac)、`.dll` (Windows) |
+| 链接时 | 代码被**复制进可执行文件** | 只记录依赖关系，不复制代码 |
+| 运行时 | **不需要**库文件（代码已"焊死"在程序里） | **必须能找到 .so**，否则报错 |
+| 可执行文件体积 | 大 | 小 |
+| 更新库 | 必须**重新编译链接**程序 | 替换 .so 即可，程序不用动 |
+| 命名 | `lib` + 库名 + `.a`，如 `libmymath.a` | `lib` + 库名 + `.so`，如 `libmymath.so` |
+
+生活类比：静态库 = 把菜谱抄回家；动态库 = 本子上只记餐馆地址，每次吃饭得餐馆开门。
+
+## 二、文件结构
+
+```
+test1/  (静态库实验)
+├── main1.cpp       # 主程序，调用 add/multiply
+├── my_add.cpp      # 加法实现
+├── my_add.h        # 加法头文件
+├── my_multiply.cpp # 乘法实现
+└── my_multiply.h   # 乘法头文件
+```
+
+## 三、静态库 .a 全流程
+
+```bash
+# 第 1 步：把库源码编译成目标文件（每个 .cpp 对应一个 .o）
+g++ -c my_add.cpp my_multiply.cpp main1.cpp
+# 生成：my_add.o  my_multiply.o  main1.o
+
+# 第 2 步：用 ar 把 .o 打包成静态库
+ar rcs libmymath.a my_add.o my_multiply.o
+#      r = 插入/替换成员  c = 创建归档  s = 建立符号索引
+# 查看 .a 里有什么： ar t libmymath.a
+
+# 第 3 步：链接生成可执行文件
+g++ main1.o libmymath.a -o my_program
+# 或用 -L. -l 写法： g++ main1.o -L. -lmymath -o my_program
+
+# 第 4 步：运行（不需要 .a，代码已复制进程序）
+./my_program
+```
+
+链接方式二选一，效果相同：
+- 直接写库文件名：`g++ main1.o libmymath.a -o my_program`
+- 用 `-L` + `-l`：`g++ main1.o -L. -lmymath -o my_program`
+  - `-L.` = 去哪个目录找库（`.` = 当前目录）
+  - `-lmymath` = 找谁（自动拼成 libmymath.a / libmymath.so）
+  - ⚠️ `-l` 要写在 `.o`/`.cpp` **后面**（链接器按顺序解析符号）
+
+## 四、动态库 .so 全流程
+
+```bash
+# 第 1 步：编译成位置无关的目标文件（必须加 -fPIC）
+g++ -c -fPIC my_add.cpp my_multiply.cpp main1.cpp
+
+# 第 2 步：生成动态库
+g++ -shared -o libmymath.so my_add.o my_multiply.o
+#      -shared = 生成共享库
+#      -fPIC   = 位置无关代码（不写死绝对地址，可被加载到内存任意位置）
+
+# 第 3 步：链接（语法和静态库一样）
+g++ main1.o -L. -lmymath -o my_program_dynamic
+
+# 第 4 步：运行 —— 经典报错来了
+./my_program_dynamic
+# ./my_program_dynamic: error while loading shared libraries:
+# libmymath.so: cannot open shared object file: No such file or directory
+```
+
+**为什么报错**：链接时 `-L.` 找到了 .so（编译期 OK），但运行时动态链接器只去系统目录找（`/lib`、`/usr/lib`、`/etc/ld.so.cache`），**不搜当前目录**。
+
+**三种解决办法（任选一）：**
+
+```bash
+# 方法1：临时指定环境变量（开发调试用，新终端要重新写）
+LD_LIBRARY_PATH=. ./my_program_dynamic
+
+# 方法2：编译时把路径焊进程序（一劳永逸，推荐）
+g++ main1.o -L. -lmymath -Wl,-rpath,'$ORIGIN' -o my_program_dynamic
+# '$ORIGIN' = 可执行文件自己所在的目录
+
+# 方法3：装进系统目录（正式部署）
+sudo cp libmymath.so /usr/lib/
+sudo ldconfig          # 刷新库缓存
+./my_program_dynamic
+```
+
+## 五、验证工具
+
+```bash
+# 查看程序依赖哪些库、能不能找到
+ldd my_program_dynamic
+# 修复前：libmymath.so => not found
+# 修复后：libmymath.so => ./libmymath.so 或具体路径
+
+# 静态库版则完全看不到 libmymath（代码已焊进程序）
+ldd my_program
+```
+
+## 六、流程总结（一张图）
+
+```
+源码 .cpp + .h
+    │  g++ -c [-fPIC]
+    ▼
+目标文件 .o ──┬── ar rcs ──→ 静态库 .a ──┐
+              └── g++ -shared ──→ 动态库 .so ──┤
+main.cpp ── g++ -c ──→ main.o ────────────────┤
+                                               ▼
+                          g++ main.o -L路径 -l库名 -o 程序
+                                               ▼
+                    静态版：直接运行（代码已复制进可执行文件）
+                    动态版：运行时需能找到 .so（LD_LIBRARY_PATH / rpath / 系统目录）
+```
+
+## 七、今日踩坑记录
+
+1. **`g++ -c main.cpp` 报 `No such file or directory`** ×2
+   - 原因：文件叫 `main1.cpp`，敲成了 `main.cpp`。Linux 区分大小写、精确匹配文件名。
+   - 教训：报错先 `ls` 核对真实文件名。
+
+2. **`mv my_program test2/` 报 `Not a directory`**
+   - 原因：当前目录下有个**文件**叫 `test2`，和要移入的文件夹冲突/路径不对。
+   - 解决：`mv my_program ../test2/`（回到上级再进目标目录）。
+
+3. **生成 `libmymath.dylib`**
+   - `.dylib` 是 macOS 后缀，Linux 应使用 `.so`。
+
+4. **动态库运行报 `cannot open shared object file`**
+   - 运行时找不到 .so → `LD_LIBRARY_PATH=. ./程序` 解决。
+
+5. **`rm *.o` 后两种程序都能跑**
+   - `.o` 只是中间产物，链接完成后静态/动态都不再需要它。
+   - 区别：`.a` 删了静态版也能跑（已焊入）；`.so` 删了动态版立刻挂（运行依赖）。
+
+## 八、关键参数速查
+
+| 参数 | 含义 |
+|---|---|
+| `g++ -c` | 只编译不链接，生成 `.o` |
+| `g++ -E` | 只预处理，生成 `.i` |
+| `g++ -S` | 生成汇编 `.s` |
+| `-fPIC` | 位置无关代码（打动态库必加） |
+| `-shared` | 生成动态库 |
+| `ar rcs` | 打包/创建静态库 |
+| `-L<目录>` | 指定链接时的库搜索路径 |
+| `-l<库名>` | 指定要链接的库（自动补 lib 前缀和后缀） |
+| `-Wl,-rpath,'$ORIGIN'` | 把库搜索路径写入程序，运行时按此查找 |
+| `LD_LIBRARY_PATH` | 运行时库搜索路径（环境变量，临时） |
+| `ldd` | 查看可执行文件的动态库依赖 |
+| `-I<目录>` | 指定头文件搜索路径（如 `-I../include`） |
