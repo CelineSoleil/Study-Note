@@ -1,0 +1,3 @@
+/c/Users/Administrator/Desktop/Study Note/C_C++/2_MakeandCMakeHomework/Code/CMakeHome/CMakeFiles/student_stats.dir
+/c/Users/Administrator/Desktop/Study Note/C_C++/2_MakeandCMakeHomework/Code/CMakeHome/CMakeFiles/edit_cache.dir
+/c/Users/Administrator/Desktop/Study Note/C_C++/2_MakeandCMakeHomework/Code/CMakeHome/CMakeFiles/rebuild_cache.dir

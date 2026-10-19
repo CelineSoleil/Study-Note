@@ -1,0 +1,1 @@
+/ucrt64/bin/c++.exe -Wl,--enable-auto-import CMakeFiles/student_stats.dir/src/main.cpp.o CMakeFiles/student_stats.dir/src/stats.cpp.o CMakeFiles/student_stats.dir/src/student.cpp.o -o student_stats.exe -Wl,--out-implib,libstudent_stats.dll.a -Wl,--major-image-version,0,--minor-image-version,0
