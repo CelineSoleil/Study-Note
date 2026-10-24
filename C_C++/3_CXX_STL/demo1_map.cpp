@@ -1,10 +1,13 @@
 #include<iostream>
 #include<map>
+#include<unordered_map>
+#include<set>
+#include<vector>
 using namespace std;
 
 
 int main(){
-
+    //一：map：
     map<string,int> ma1;//空构造
     map<string,int> ma2={{"apple",3},{"banana",2}};//初始化列表c++11
 
@@ -53,5 +56,43 @@ int main(){
     cout<<"upper_bound:第一个>b的迭代器:"<<itupper->first<<" "<<itupper->second<<endl;
 
     
+    //二：unordered_map
+    cout<<"-------------------------unordered_map:"<<endl;
+    unordered_map<string,int> um;
+    um["z"]=1;um["a"]=2;um["m"]=3;
+    for(auto& [k,v]:um){
+        cout<<k<<" ";//输出顺序随机
+    }
+    cout<<endl;
+
+    //multimap
+    cout<<"-------------------------multimap:"<<endl;
+    multimap<string,int> mm;
+    mm.insert({"apple",1});
+    mm.insert({"apple",2});
+    mm.insert({"apple",3});
+
+    cout<<mm.count("apple")<<endl;
+    auto range = mm.equal_range("apple");
+    for (auto it = range.first; it != range.second; it++)
+        cout << it->first << " = " << it->second << endl;
+// 输出 apple = 1 / apple = 2 / apple = 3//返回所有"apple"的范围[begin,end)
+    //multimap没用operator[],多个值不知道返回哪个，语义不成立
+
+    //ser/unordered_ser
+    cout<<"-------------------------set:"<<endl;
+    set<int> s;
+    s.insert(3);s.insert(2);s.insert(3);
+    for(auto x:s)cout<<x<<" ";//只有2 3，有序而且唯一
+    cout<<endl;
+    //高频用途：判重+自动排序
+    vector<int> nums={5,2,8,2,5,9};
+    set<int> uniq(nums.begin(),nums.end());
+    for(auto x:uniq)cout<<x<<" ";
+    cout<<endl;
+    
+    if(s.count(3)){cout<<3<<"存在"<<endl;}
+
+
     return 0;
 }

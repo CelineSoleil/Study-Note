@@ -26,6 +26,37 @@ map基本原理
 operator[]访问，先查找k，找到返回引用，否则insert一个(k，初始化)，在返回引用
 
 
+二：unordered_map 哈希表
+    -底层：哈希表（散列表）
+    -核心思路通过哈希函数把key直接映射到数组下标，一步到位
+key="apple" -> bash("apple") = 7 ->直接访问 数组[7]
+
+理想情况下查找为O(1),与数据量无关
+
+哈希冲突：不同key算出同一个下标（"apple"和"grape"都算出7）：
+    -下标7：["apple"]->["grape"]->["peach"] 冲突解决方案：拉链表
+
+
+三：map家族的其他容器
+-1.multimap-key可重复的有序表
+-2.set/unordered_set-只有key没用value
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+!!!
+-unordered_ 前缀=哈希表+无序+O(1)
+-无前缀=红黑树+有序+O(logn)
+-multi前缀=key可重复+无operator[]
+
+四：选型决策树
+要存键值对？
+-需要按key有序遍历/范围查询——》map
+-纯查找，数据量大，要速度——》unordered_map
+-key会重复》——》multimap
+
+只要判重/去重？
+-顺便要排序——》set
+-不排序——》unordered_set
+
 
 */
 
