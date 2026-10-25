@@ -1,0 +1,1 @@
+/ucrt64/bin/c++.exe -Wl,--enable-auto-import CMakeFiles/cmake_student_manager.dir/main.cpp.o CMakeFiles/cmake_student_manager.dir/StudentService.cpp.o -o cmake_student_manager.exe -Wl,--out-implib,libcmake_student_manager.dll.a -Wl,--major-image-version,0,--minor-image-version,0
