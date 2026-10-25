@@ -1,0 +1,119 @@
+# 学生成绩管理系统
+一个基于 C++17 的控制台学生成绩管理系统，使用 STL、智能指针和 Lambda 表达式实现学生的添加、删除、查询、修改和列表显示。
+
+## 功能
+- 添加学生，检查学号重复、空姓名和非法成绩
+- 根据学号删除学生
+- 根据学号查询学生
+- 根据姓名查询学生，支持同名学生
+- 修改学生姓名和成绩
+- 显示全部学生，并按学号排序
+- 对非法菜单选项和错误输入进行提示
+
+## 技术要点
+- `std::unordered_map`：按照学号保存和查找学生
+- `std::unique_ptr`：自动管理学生对象的生命周期
+- `std::vector`：保存查询结果
+- `std::sort` 与 Lambda 表达式：按照学号排序
+- 分层设计：界面代码与业务代码分离
+
+## 项目结构
+
+4_student_manage_system/
+├── CMakeLists.txt
+├── Makefile
+├── README.md
+├── main.cpp
+├── Student.h
+├── StudentService.h
+├── StudentService.cpp
+└── build/
+
+- `main.cpp`：控制台菜单及输入输出
+- `Student.h`：学生数据模型
+- `StudentService.h`：业务层接口声明
+- `StudentService.cpp`：业务层功能实现
+
+## 环境要求
+- 支持 C++17 的 C++ 编译器
+- Windows 下推荐使用 MSYS2 MinGW-w64 的 `g++`
+- 可选：CMake 3.10 或更高版本
+- 可选：GNU Make 或 MinGW Make
+
+检查编译器：
+
+```powershell
+g++ --version
+```
+
+## 方法一：使用 g++ 编译运行
+
+在项目根目录执行：
+```powershell
+g++ -std=c++17 -Wall -Wextra -pedantic main.cpp StudentService.cpp -o student_manager.exe
+```
+编译成功后运行：
+```powershell
+.\student_manager.exe
+```
+
+## 方法二：使用 CMake 编译运行
+
+第一次配置并编译：
+```powershell
+cmake -S . -B build
+cmake --build build
+```
+运行：
+```powershell
+.\build\student_manager.exe
+```
+后续只修改了源代码时，重新执行：
+```powershell
+cmake --build build
+.\build\student_manager.exe
+```
+
+## 方法三：使用 Make 编译运行
+如果系统提供 `make`：
+```powershell
+make
+.\student_manager.exe
+```
+如果系统提供的是 `mingw32-make`：
+```powershell
+mingw32-make
+.\student_manager.exe
+```
+
+清理编译产物：
+
+```powershell
+make clean
+```
+或：
+```powershell
+mingw32-make clean
+```
+
+## 使用说明
+程序启动后，按照菜单输入对应数字：
+```text
+1. 添加学生
+2. 删除学生
+3. 按学号查询
+4. 按姓名查询
+5. 按成绩查询
+6. 修改学生
+7. 显示全部学生
+0. 退出
+```
+
+程序内置两条测试数据，方便直接测试查询和排序功能。
+当前版本的数据只保存在内存中，程序退出后，本次新增和修改的数据不会保存。
+
+## 后续可扩展功能
+- 使用文件保存和读取学生数据
+- 将按成绩查询加入控制台菜单
+- 增加平均分、最高分和及格率统计
+- 增加单元测试
