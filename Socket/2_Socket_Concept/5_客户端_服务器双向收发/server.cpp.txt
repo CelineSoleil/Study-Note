@@ -1,0 +1,195 @@
+#include <iostream>
+#include <string>
+#include <cstring>
+#include <atomic>
+#include <thread>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+constexpr int PORT = 2000;
+constexpr int BUFFER_SIZE = 1024;
+
+// 将一条消息完整发送出去
+bool send_all(int fd, const std::string& message) {
+    size_t sent_total = 0;
+
+    while (sent_total < message.size()) {
+        ssize_t n = send(
+            fd,
+            message.c_str() + sent_total,
+            message.size() - sent_total,
+            MSG_NOSIGNAL
+        );
+
+        if (n <= 0) {
+            return false;
+        }
+
+        sent_total += n;
+    }
+
+    return true;
+}
+
+// 接收线程：循环接收对方发来的消息
+void receive_messages(int fd, std::atomic<bool>& running) {
+    char buffer[BUFFER_SIZE];
+
+    while (running) {
+        ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
+
+        if (n > 0) {
+            std::string message(buffer, n);
+
+            std::cout << "\n对方：" << message
+                      << "\n请输入消息：" << std::flush;
+        } else if (n == 0) {
+            if (running) {
+                std::cout
+                    << "\n对方已断开连接，按回车退出。\n"
+                    << std::flush;
+            }
+
+            running = false;
+            shutdown(fd, SHUT_RDWR);
+            break;
+        } else {
+            if (running) {
+                perror("recv failed");
+            }
+
+            running = false;
+            shutdown(fd, SHUT_RDWR);
+            break;
+        }
+    }
+}
+
+int main() {
+    // 1. 创建监听 Socket
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_fd == -1) {
+        perror("socket failed");
+        return 1;
+    }
+
+    // 允许重新启动时复用端口
+    int reuse = 1;
+
+    setsockopt(
+        server_fd,
+        SOL_SOCKET,
+        SO_REUSEADDR,
+        &reuse,
+        sizeof(reuse)
+    );
+
+    // 2. 设置服务器地址
+    sockaddr_in server_addr{};
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(PORT);
+
+    // 3. 绑定端口
+    if (bind(server_fd,
+             (sockaddr*)&server_addr,
+             sizeof(server_addr)) == -1) {
+        perror("bind failed");
+        close(server_fd);
+        return 1;
+    }
+
+    // 4. 开始监听
+    if (listen(server_fd, 5) == -1) {
+        perror("listen failed");
+        close(server_fd);
+        return 1;
+    }
+
+    std::cout << "服务器等待客户端连接，端口："
+              << PORT << std::endl;
+
+    // 5. 接受一个客户端连接
+    sockaddr_in client_addr{};
+    socklen_t client_len = sizeof(client_addr);
+
+    int client_fd = accept(
+        server_fd,
+        (sockaddr*)&client_addr,
+        &client_len
+    );
+
+    if (client_fd == -1) {
+        perror("accept failed");
+        close(server_fd);
+        return 1;
+    }
+
+    // 今天只处理一个客户端，接受连接后关闭监听 Socket
+    close(server_fd);
+
+    std::cout << "客户端已连接："
+              << inet_ntoa(client_addr.sin_addr)
+              << ":"
+              << ntohs(client_addr.sin_port)
+              << std::endl;
+
+    // 双方共同使用这个状态，判断程序是否继续运行
+    std::atomic<bool> running{true};
+
+    // 6. 启动接收线程
+    std::thread receiver(
+        receive_messages,
+        client_fd,
+        std::ref(running)
+    );
+
+    // 7. 主线程循环读取键盘并发送消息
+    while (running) {
+        std::cout << "请输入消息：" << std::flush;
+
+        std::string message;
+
+        if (!std::getline(std::cin, message)) {
+            break;
+        }
+
+        // 等待键盘输入期间，对方可能已经断开
+        if (!running) {
+            break;
+        }
+
+        if (message == "quit") {
+            running = false;
+            shutdown(client_fd, SHUT_RDWR);
+            break;
+        }
+
+        if (message.empty()) {
+            continue;
+        }
+
+        if (!send_all(client_fd, message)) {
+            std::cout << "发送失败，连接已断开。\n";
+            running = false;
+            shutdown(client_fd, SHUT_RDWR);
+            break;
+        }
+    }
+
+    // 8. 结束接收线程并释放资源
+    running = false;
+    shutdown(client_fd, SHUT_RDWR);
+
+    if (receiver.joinable()) {
+        receiver.join();
+    }
+
+    close(client_fd);
+
+    std::cout << "服务器已退出。" << std::endl;
+    return 0;
+}

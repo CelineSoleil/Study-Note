@@ -1,0 +1,237 @@
+一.头文件
+    #include<iostream>//用于输出提示信息、读取键盘输入。
+        std::cout、cin、getline、endl、flush
+    #include<string>//用于保存一条完整的消息，字符串
+        std::string
+    #include<cstring>//提供c风格的内存、字符串相关函数
+        memset()
+    #include<atomic>//用于让主线程和接收线程共同控制程序是否继续运行
+        std::atomic<bool>
+    #include<thread>//用于创建接收线程
+        std::thread、std::ref
+    #include<unistd.h>//用于关闭Socket
+        close()
+    #include<arpa/inet.h>//用于端口、IP地址转换
+        htons()、htonl()、ntohs()、inet_ntoa()
+    #include<sys/socket.h>
+        socket()、bind()、lisetn()、accept()、
+        connect()、recv()、send()、setsockopt()、shutdown()
+
+二.定义常量
+    constexpr int PORT =2000;
+    constexpr int BUFFER_SIZE=1024;
+
+三.服务器的发送函数send_all()
+    /*
+    把 message 中的全部内容通过 fd 对应的 Socket 发送出去。
+    
+    参数：int fd,std::string &message  //fd 就是服务器与客户端通信使用的 client_fd
+    返回类型：bool 成功或失败
+    */
+    bool send_all(int fd,const std::string&message){
+        
+        //记录已经发送的字节数，刚开始是0
+        size_t sent_total=0;
+        //循环检查是否全部发送完
+        while(sent_total<message.size()){
+            //调用send发送
+            ssize_t n=sent(
+                fd,//发往哪
+                message.c_str+sent_total,//从哪开始发送
+                message.size()-sent_total,//这次发送还剩多少
+                MSG_NOSIGNAL//Linux发送标志
+            );//返回值n记录本次发送了多少
+            //发送判断
+            if(n<=0){
+                return false;
+            }
+            sent_total+=n;
+        }
+        //发送成功
+        //return sent_total==message.size();
+        return true;
+    }
+
+四.服务器接收函数receive_messages()
+    /*
+    接收消息、显示消息、处理断开。
+
+    参数：int fd,std::atomic<bool>&running
+    返回值：void
+    */
+    void receive_messages(int fd,std::atomic<bool>&running){
+        //准备接收缓冲区
+        char buffer[BUFFER_SIZE];
+        //循环接收消息
+        while(running){//只要running是true，接收线程就一直执行
+            ssize_t n=recv(
+                fd,//从哪个连接接收
+                buffer,//数据保存在哪
+                sizeof(buffer),//最多接收多少
+                0//默认方式接收
+            );
+            //接收检查
+            if(n>0){//本次接收了n个字节
+                std::string message(buffer,n);//构造字符串
+                //显示消息：
+                    '\n'用于先换行，避免对方消息直接粘在当前提示后面。
+                    std::flush 表示立即把内容显示到终端，不等待输出缓冲区自动刷新。
+                std::cout<<"\n对方："<<message
+                         <<"\n请输入消息："<<std::flush;
+            }
+            else if(n==0){//处理客户端正常断开
+                if(running){
+                    std::cout<< "\n对方已断开连接，按回车退出。\n"
+                             << std::flush;
+                }
+                running=false;//通知主线程不要再继续发送。
+                shutdown(fd,SHUT_RDWR);//关闭 Socket 的读写方向。
+                break;
+            }
+            else{
+                if(running){
+                    perror("recv failed");
+                }
+                //同理
+                running=false;
+                shutdown(fd,SHUT_RDWR);
+                break;
+            }
+        }
+    }
+
+五.服务器main():建立连接
+    int main(){
+        //创建监听Socket
+            int server_fd=socket(AF_INET,SOCK_STREAM,0);
+            if(server_fd==-1){
+                perror("socket failed");
+                return 1;//表示异常结束
+            }
+
+        //端口复用
+            int reuse=0;
+            setsockopt(
+                server_fd,
+                SQL_SOCKET,
+                SO_REUSEADDR,
+                &reuse,
+                sizeof(reuse)
+            );
+        
+        //准备服务器地址
+            sockaddr_in server_addr{};
+                    //定义一个 IPv4 地址结构体。{}表示把结构体内容清零初始化。
+                //设置IPv4
+                server_addr.sin_family=AF_INET;
+                //设置监听地址
+                server_addr.sin_addr.s_addr=htonl(INADDR_ANY);//表示监听本机可用的网络地址。
+                //设置监听端口
+                server_addr.sin_port=htons(PORT);
+
+        //绑定地址和端口
+            int n=bind(
+                server_fd,
+                (struct sockaddr*)&server_addr,
+                sizeof(server_addr)
+            );//把server_fd绑定到server_addr中的地址和端口
+                //检查判断
+                if(n==-1){
+                    perror("bind failed");
+                    close(server_fd);
+                    return 1;
+                }
+
+        //开始监听
+            int n=listen(server_fd,5);//让server_fd进入监听状态
+            
+                //检查判断
+                if(n==-1){
+                    perror("listen failed");
+                    close(server_fd);
+                    return 1;
+                }
+
+        //输出等待提示
+            std::cout << "服务器等待客户端连接，端口："
+                    << PORT << std::endl;
+
+        //接收客户端连接
+            sockaddr_in client_addr{};//连接成功后，客户端的 IP 和端口会保存在这里。
+            socklen_t client_len=sizeof(client_addr);//准备地址长度：
+
+            //然后等待连接：
+                int client_fd=accept(
+                    server_fd,
+                    (sockaddr*)&client_addr,
+                    &client_len
+                );
+            //检查结果
+                if(client_fd==-1){
+                    perror("accept failed");
+                    close(server_fd);
+                    return 1;
+                }
+
+        //关闭监听Socket
+            close(server_fd);
+                今天的服务器只处理一个客户端。
+                客户端已经连接成功，不再需要接受新客户端，因此关闭监听 Socket。
+                这不会断开已经建立的 client_fd 连接。
+        
+        //显示客户端地址
+            std::cout<<"客户端已连接："
+                    <<inet_ntoa(client_addr.sin_addr)<<":"
+                    <<ntohs(client_addr.sin_port)<<std::endl;
+
+                inet_ntoa() 把客户端 IP 转成字符串。
+                ntohs() 把客户端端口转成可读的数字。
+
+六.服务器 main()：启动双向收发
+        1.创建共享运行状态
+        std::atomic<bool>running{true};//程序当前处于运行状态。
+        2.创建接收线程
+        std::thread receiver{创建并立即启动一个线程。
+            receive_messages,//	新线程要执行的函数
+            client_fd,//传给函数的 Socket
+            std::ref(running)//	把同一个 running 以引用传进去
+        };
+            主线程继续向下执行。
+            接收线程进入 receive_messages()，开始 recv()。
+
+        3.主经常进入发送循环
+            只要连接仍在运行，就重复：
+            读取键盘 → 发送消息
+        while(running){
+            std::cout<<"请输入消息："<<std::flush;
+            std::string message;
+            if(!std::getline(std::cin,message)){break;}
+            //检查键盘输入期间对方是否已经断开
+            if(!running)break;
+
+            if(message=="quit"){//处理本地退出命令
+                running=false;
+                shutdown(client_fd,SHUT_RDWR);
+                break;
+            }
+            if(message.empty())continue;
+
+            if(!send_all(client_fd,message)){
+                std::cout<<"发送失败，连接已经断开\n";
+                running=false;
+                shutdown(client_fd,SHUT_DRWR);
+                break;
+            }
+
+        }
+
+七：服务器main：退出和清理
+    running=false;//再次确保接收线程知道程序准备退出。
+    shutdown(client_fd,SHUT_DRWR);//让可能正在等待的 recv() 结束。
+
+    if(receiver.joinable()){receiver.join();}//检查接收线程是否可以等待，然后等待接收线程结束。
+    close(client_fd);//接收线程已经结束后，关闭客户端连接。
+    std::cout << "服务器已退出。" << std::endl;
+
+        return 0;
+    }
