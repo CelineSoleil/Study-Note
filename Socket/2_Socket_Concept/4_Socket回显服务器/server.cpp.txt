@@ -1,0 +1,111 @@
+//Linux系统
+#include <iostream>
+#include <string>
+#include <cstring>
+#include <cstdlib>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define SERVER_IP "127.0.0.1"
+#define PORT 2000
+#define BUFFER_SIZE 1024
+
+int main() {
+    int client_fd;
+    struct sockaddr_in server_addr;
+    char buffer[BUFFER_SIZE];
+
+    // 1. 创建客户端 Socket
+    client_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_fd == -1) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // 2. 设置服务器地址
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+
+    if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
+        perror("inet_pton failed");
+        close(client_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // 3. 连接服务器
+    if (connect(client_fd,
+                (struct sockaddr *)&server_addr,
+                sizeof(server_addr)) == -1) {
+        perror("connect failed");
+        close(client_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    std::cout << "已连接服务器 " << SERVER_IP << ":" << PORT << std::endl;
+    std::cout << "请输入消息，输入 quit 退出。" << std::endl;
+
+    // 4. 循环发送消息并接收回显
+    while (true) {
+        std::string message;
+
+        std::cout << "客户端输入：";
+        std::getline(std::cin, message);
+
+        if (message == "quit") {
+            break;
+        }
+
+        if (message.empty()) {
+            continue;
+        }
+
+        // 将完整消息发送给服务器
+        size_t sent_total = 0;
+
+        while (sent_total < message.size()) {
+            ssize_t sent_len = send(
+                client_fd,
+                message.c_str() + sent_total,
+                message.size() - sent_total,
+                0
+            );
+
+            if (sent_len == -1) {
+                perror("send failed");
+                close(client_fd);
+                exit(EXIT_FAILURE);
+            }
+
+            sent_total += sent_len;
+        }
+
+        // 接收服务器返回的消息
+        memset(buffer, 0, sizeof(buffer));
+
+        ssize_t recv_len = recv(
+            client_fd,
+            buffer,
+            sizeof(buffer) - 1,
+            0
+        );
+
+        if (recv_len > 0) {
+            buffer[recv_len] = '\0';
+            std::cout << "服务器回显：" << buffer << std::endl;
+        } else if (recv_len == 0) {
+            std::cout << "服务器已断开连接。" << std::endl;
+            break;
+        } else {
+            perror("recv failed");
+            break;
+        }
+    }
+
+    // 5. 关闭 Socket
+    close(client_fd);
+    std::cout << "客户端已退出。" << std::endl;
+
+    return 0;
+}

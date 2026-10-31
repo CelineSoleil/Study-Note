@@ -1,0 +1,234 @@
+四、服务器server.cpp解析
+    1.变量定义
+        int server_fd;
+            服务器的监听Socket，负责绑定端口->监听->等待客户端连接
+            fd是file descriptor,即文件描述符，可以理解为一个编号或者遥控器。
+            是监听Socker的编号
+            后续调用bind()\listen()时需要这个编号告诉系统操作哪个Socket
+
+        int client_fd;
+            这个是客户端连接成功后，服务器专门用于和该客户端通信的Socket
+
+        -------------------------------
+        所以服务器有俩个Socket
+        变量 	    用途 
+        server_fd	监听和接受连接
+        client_fd	与已经连接的客户端收发消息
+        服务器真正执行 recv() 和 send() 时使用的是 client_fd，不是 server_fd
+
+        struct sockaddr_in server_addr;
+            保存服务器自己的地址信息：
+                使用IPv4
+                监听哪个IP
+                监听哪个端口
+
+        struct sockaddr_in client_addr;
+            客户端连接成功后，操作系统把客户端的IP和端口写到这里面
+            因此服务器后面才能打印：客户端已连接：127.0.0.1:某个端口
+
+        socklen_t client_addr_len = sizeof(client_addr);
+
+        char buffer[BUFFER_SiZE];
+            这是一个字符数组，用来临时存放接收到的数据
+            例如客户端发送 hello，服务器就把它接收到 buffer 中。
+
+    2.创建服务器Socket
+        server_fd=socket(AF_INET,SOCK_STREAM,0);//创建一个 IPv4 的 TCP Socket。
+            三个参数分别表示：
+                参数 	    含义 
+                AF_INET	    使用 IPv4
+                SOCK_STREAM	使用面向字节流的 TCP
+                0	        根据前两个参数使用默认协议
+            
+        错误检查:
+        if(server_fd==-1){
+            perror("socket failed");//输出失败原因
+            exit(EXIT_FAILURE);//直接结束程序
+        }//如果返回-1，说明创建失败
+
+    3.设置端口复用:运行重启服务器时复用端口
+        int reuse=1;
+
+        setsockopt(
+            server_fd,
+            SQL_SOCKET,
+            SQ_REUSEADDR,
+            &reuse,
+            sizeof(reuse)
+        );
+        //这段的作用是：允许服务器重新启动时，尽快再次绑定刚才使用的端口。
+        否则，服务器刚关闭后立刻重启，有时会遇到：bind failed: Address already in use
+        现在只要知道它是端口复用设置即可，不需要背参数。
+
+        错误检查
+        if(setsockopt(
+            server_fd,
+            SQL_SOCKET,
+            SQ_REUSEADDR,
+            &reuse,
+            sizeof(reuse)
+        )==-1){
+            perror("setsocket failed");
+            close(server_fd);
+            exit(EXIT_FAILURE);
+        }
+
+    4.设置服务器地址
+        //先清空结构体
+        memset(&server_addr,0,sizeof(server_addr));
+        //然后设置三个项：
+        server_addr.sin_family=AF_INET;//使用IPv4与创建Socket时的AF_INET对应
+        server_addr.sin_addr.s_addr=htonl(INADDR_ANY);//监听本机网卡
+            INADDR_ANY 表示服务器不限制只监听某一个本机 IP。
+            你的虚拟机可能有：
+            127.0.0.1
+            192.168.80.135
+            使用 INADDR_ANY 后，客户端可以通过这些属于本机的地址访问服务器，前提仍然是网络和端口正确。
+        server_addr.sin_port=htons(PORT);//设置端口，现在相当于端口是2000
+            htons() 是把端口号转换成网络要求的字节顺序
+            记住设置 sockaddr_in 的端口时，使用 htons()。
+
+    5.绑定地址和端口
+        bind(
+            server_fd,
+            (struct sockaddr*)&server_addr,
+            sizeof(server_addr)
+        );//把 server_fd 这个 Socket 和 server_addr 中的地址、端口绑定。
+            执行成功后，这台 Linux 的 2000 端口就由这个服务器程序使用。
+        三个参数分别是：
+        要绑定的Socket
+        地址信息
+        地址结构体大小
+
+        错误检查：
+        if(bind(server_fd,(struct sockaddr*)&server_addr,sizeof(server_addr))==-1){
+            perror("bind failed");
+            close(server_fd);
+            exit(EXIT_FAILURE);
+        }
+        常见原因包括：
+        端口已经被其他程序使用。
+        客户端和服务器配置错误。
+        前一个服务器还没有关闭。
+        
+    6.开始监听
+        listen(server_fd,5);//让 server_fd 进入监听状态，准备接受客户端连接。
+            这里的 5 是等待连接的队列长度，不是“服务器最多只能连接五个客户端”。
+        
+        错误检查：
+        if(listen(server_fd,5)==-1){
+            perror("listen failed");
+            close(server_fd);
+            exit(EXIT_FAILURE);
+        }
+
+    7.等待客户端连接
+        client_fd=accept(
+            server_fd,
+            (struct sockaddr*)&client_addr,
+            &client_addr_len
+        );//accept() 会等待客户端连接。
+
+            所以启动服务器后，你看到：
+                等待客户端连接...
+            然后程序停在这里是正常现象，不是卡死。
+
+        客户端执行 connect() 后，accept() 返回一个新的 Socket：
+            client_fd
+
+        之后服务器通过它收发消息：
+            recv(client_fd, ...);
+            send(client_fd, ...);
+
+        连接成功后，打印客户端信息：
+        std::cout << "客户端已连接："
+                  << inet_ntoa(client_addr.sin_addr)//inet_ntoa()：把客户端 IP 转成可读字符串。
+                  << ":"
+                  << ntohs(client_addr.sin_port)//ntohs()：把客户端端口转换成主机可读的数字。
+                  << std::endl;
+
+            客户端显示的端口通常是系统临时分配的，不一定是 2000。
+            例如：
+            客户端已连接：127.0.0.1:45426
+            运行
+            服务器端口：2000
+            客户端临时端口：45426
+            两者不冲突。
+
+    8.接收客户端消息
+        服务器进入循环：
+        while(true){//表示持续处理信息，知道客户端端口或者发生错误
+            //每次先清空缓冲区
+            memset(buffer,0,sizeof(buffer));
+
+            //然后接收
+            ssize_t recv_len = recv(
+                client_fd,
+                buffer,
+                sizeof(buffer)-1,
+                0
+            );
+                四个参数分别是：
+                参数 	             含义 
+                client_fd	        从哪个客户端连接接收
+                buffer	            数据存到哪里
+                sizeof(buffer) - 1	最多接收多少字节
+                0	                使用默认接收方式
+                这里使用 sizeof(buffer) - 1，是为了给字符串末尾的 '\0' 留一个位置。
+            
+            recv() 的返回值非常重要
+            recv_len:表示本次实际接收到的字节数。
+                大于0：收到数据
+                例如收到:"hello",recv_len=5>0
+                if(recv_len>0){
+                    buffer[recv_len]='\0';//把接收到的内容变成可安全打印的字符串
+
+                    //接着输出：
+                    std::cout << "收到客户端消息："
+                              << buffer
+                              << std::endl;
+                }
+
+                等于 0：客户端正常断开
+                else if(recv_len==0){
+                    std::cout<<"客户端已断开连接"<<std::endl;
+                    break;
+                }//客户端执行 close(client_fd) 后，服务器的 recv() 就会返回 0
+                
+                小于 0：接收出错
+                else {
+                    perror("recv failed");
+                    break;
+                }
+        }
+    
+    9.把消息发回客户端
+        ssize_t sent_total=0;
+        //表示已经发送了多少字节，一开始是0；
+
+        while(sent_total<recv_len){//只要“已经发送的字节数”小于“收到的字节数”，就继续发送。
+
+            ssize_t sent_len=send(
+                client_fd,
+                buffer+sent_total,
+                recv_len-send_total,
+                0
+            );
+                四个参数分别是：
+                参数 	                含义 
+                client_fd	            发给哪个客户端
+                buffer + sent_total 	从未发送的位置开始发送
+                recv_len - sent_total	还剩多少字节需要发送
+                0	                    默认发送方式
+            //发送成功后：
+            sent_total += sent_len;//更新已经发送的字节数。
+                之所以使用循环，是因为 send() 不保证一次把所有数据都发送完。
+        }
+            这一步完成后，服务器就把客户端发来的内容原样发回去了，所以叫“回显服务器”
+
+    10.关闭服务器
+        close(client_fd);
+        close(server_fd);
+        //先关闭与客户端的通信连接，在关闭Socket
+        最后
+        return 0

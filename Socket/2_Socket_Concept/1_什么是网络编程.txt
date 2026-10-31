@@ -1,0 +1,32 @@
+
+什么是网络、计算机网络的构成是什么？
+--什么是网络？
+1.计算机领域中，网络是信息传输、接收和共享的虚拟平台。
+2.通过它把各个点、面、体的信息练习到一起，从而实现信息共享。
+
+--什么是局域网？
+1.电脑，手机，打印机连接到一个路由器上，就是局域网。
+2.路由器连接到外网实现上网
+
+--什么是互联网？
+1.无数个局域网+广域网等组成
+
+--什么是网络编程？
+
+1.对信息的发送和接收
+2.通过操作相应的Api调度计算机硬件资源，并利用传输管道（网线）进行数据交换的过程
+3.更为具体的就是：网络模型、套接字、数据包
+
+--7层网络模型
+Application         Application
+Presentation        ...
+Session             ...
+Transport           ...
+Network             ...
+Data Link         Data Link
+Physical   -----> Pyhsical
+
+基础层：物理层（Pyhsical）、数据链路(Data Link)、网络层(Network)
+传输层(Transport)：TCP-UDP协议层、Scoket
+高级层：会话层(Session)、表示层(Presentation)、应用层(Application)
+

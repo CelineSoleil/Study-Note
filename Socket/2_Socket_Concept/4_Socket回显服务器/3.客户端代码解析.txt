@@ -1,0 +1,102 @@
+五、客户端server.cpp解析
+    1.创建客户端Socket
+        client_fd=socket(AF_INET,SOCK_STREAM,0);
+            和服务器一样：
+                创建一个 IPv4 TCP Socket
+        
+            客户端不需要执行：
+            cpp
+            bind()
+            listen()
+            accept()
+            因为客户端不是等待别人连接，而是主动连接服务器。
+
+    2.设置要连接的服务器地址
+        struct sockaddr_in server_addr;
+            这里虽然变量也叫 server_addr，但它位于客户端程序中，表示“要连接的服务器地址”。
+        //先清零,在设置：
+        memset(&server_addr,0,sizeof(server_addr));
+        server_addr.sin_famliy=AF_INET;
+        server_addr.sin_port=htons(PORT);
+
+        把 IP 字符串写进结构体：
+        inet_pton(
+            AF_INET,
+            SERVER_IP,//SERVER_IP 当前是："127.0.0.1"
+            &server_addr.sin_addr
+        );//inet_pton() 的作用是把人可读的 IP 字符串转换成程序需要的二进制地址。
+
+    3.主动连接服务器
+        connect(
+            client_fd,
+            (struct sockaddr*)&server_addr,
+            sizeof(server_addr)
+        );//使用 client_fd，连接 server_addr 中指定的服务器。
+            如果服务器已经启动并监听 2000 端口，连接就能成功。
+            如果服务器没启动，通常会报：
+                connect failed: Connection refused
+
+            所以要遵守：
+                先运行 ./server
+                再运行 ./client
+    
+    4.从键盘读取一行
+        std::string message;//定义一个字符串遍历
+        std::getline(std::cin,message);//从键盘中读取一行
+
+        //判断是否退出
+        if(message=="quit"){
+            break;
+        }//输入 quit 后跳出循环，程序最后执行 close()。
+
+        //忽略空消息
+        if(message.empty()){
+            continue;
+        }
+
+    5.客户端发送消息
+        size_t sent_total=0;
+        循环和调用
+        send(
+            client_fd,
+            message.c_str()+sent_total,
+            message.size()-sent_total,
+            0
+        );
+            这里与服务器发送代码的区别主要是数据来源。
+            服务器从 buffer 发送：
+                buffer + sent_total
+            客户端从 std::string 发送，所以使用：
+                message.c_str();//message.c_str() 表示取得这个字符串底层的字符数据。
+
+    6.客户端接收服务器回显
+        先清空缓冲区
+            memset(buffer,0,sizeof(buffer));
+        
+        然后接收 
+            ssize_t recv_len=recv(
+                client_fd,
+                buffer,
+                sizeof(buffer)-1,
+                0
+            );
+            //成功接收，加\0
+            buffer[recv_len] = '\0';
+        
+        最后打印：
+        std::cout << "服务器回显："
+                  << buffer
+                  << std::endl;
+
+        客户端的 recv() 返回值和服务器相同：
+        返回值 	含义 
+        大于 0	收到了数据
+        等于 0	服务器断开了
+        小于 0	接收出错
+
+    7.客户端退出
+        close(client_fd);
+        关闭Socket
+        
+        服务器此时正在执行recv(client_fd,...)
+            它发现客户端关闭，于是recv()返回0，也退出

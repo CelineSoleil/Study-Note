@@ -1,0 +1,70 @@
+Socket 概念 + 回显服务器（socket→bind→listen→accept→recv/send）	一个客户端连上能回话。
+
+/*
+使用 socket → bind → listen → accept → recv/send。
+客户端可以连接服务器。
+客户端发送什么，服务器就原样返回什么。
+支持连续发送多条消息。
+输入 quit 退出。
+测试端口：12345
+*/
+
+一：完整流程
+
+    客户端输入hello的流程
+    -》客服端通关Socket发出hello
+    -》服务器端通过recv收到hello
+    -》服务器通过send发回hello
+    -》客户端通过recv收到hello
+    -》客服端打印‘服务器回显：hello’
+
+    服务器：
+    socket()    创建一个socket
+    bind()      绑定本机的2000端口号
+    listen()    开始监听
+    accept()    等待客户端连接
+    recv()      接收客户端消息
+    send()      把消息原样发回去
+    close()     关闭连接
+
+    客户端：
+    socket()    创建一个socket
+    connect()   连接服务器的2000端口号
+    send()      发送键盘输入的消息
+    recv()      接收服务器回显
+    close()     关闭连接
+
+    服务器必须先启动：因为他要执行bind、listen、accept等待客服端
+
+二、头文件作业
+    //共有头文件
+    #include <iostream>//使用std::cout输出信息
+    #include <cstring>//使用memset()清空内存
+    #include <cstdlib>//使用exit、EXIT_FAILURE
+    #include <unistd.h>//使用close()关闭Socket
+    #include <arpa/inet.h>//使用inet_pton()\inet_ntoa()\htons()等地址函数
+    #include <sys/socket.h>//使用socket()\bind()\listen()\accept()\connetc()\send()\recv()
+
+    客户端还包含：
+    #include <string>
+    因为客户端使用了：
+    std::string message;//保存你从键盘输入的一行消息。
+
+三、宏定义含义
+    服务器：
+    #define SERVER_IP "127.0.0.1"
+    #define PORT 2000
+    #define BUFFER_SIZE 1024
+    客户端：
+    #define PORT 2000
+    #define BUFFER_SIZE 1024
+
+    PORT:服务器和客户端约定的端口
+    SERVER_IP:客户端要连接的服务器IP
+    BUFFER_SIZE:接收缓冲区大小
+
+    因为服务器和客户端我都是同一个Linux虚拟机，所以客户端连接是
+    127.0.0.1:2000
+    127.0.0.1表示当前这台机器
+    如果是另外虚拟机，需要改变ip
+
