@@ -1,4 +1,4 @@
-五、客户端server.cpp解析
+五、客户端client.cpp解析
     1.创建客户端Socket
         client_fd=socket(AF_INET,SOCK_STREAM,0);
             和服务器一样：
