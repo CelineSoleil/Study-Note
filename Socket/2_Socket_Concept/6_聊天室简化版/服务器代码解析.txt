@@ -1,0 +1,102 @@
+#include <iostream>
+#include <string>
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <algorithm>   // std::remove
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+constexpr int PORT = 2000;
+constexpr int BUFFER_SIZE = 1024;
+
+//全局共享的名单
+std::vector<int> clients;//所有在线客户端的fd
+std::mutex clients_mutex;//包含它的锁
+    这个vector会被多个线程同时碰，必须让它具有原子性，
+    凡是碰了clients的代码，第一行都是 lock_guard构造加锁，出作用域自动解锁
+
+//把消息发给所有客户端用户
+void broadcast(const std::string&msg,int sender_fd){
+    std::lock_guard<std::mutex> lock(client_mutex);
+    for(int fd:clients){
+        if(fd==sender_fd)continue;//跳过说话的人自己
+        send(fd,msg.c_str(),msg.size(),MSG_NOSIGNAL);
+    }
+}
+
+// 从列表中移除一个客户端用户，返回剩余人数
+size_t remove_client(int fd){//erase-remove 惯用法
+    std::lock_guard<std::mutex> lock(client_mutex);
+    clients.erase(std::remove(clients.begin,clients.end(),fd),clients.end());
+        std::remove(begin, end, fd)：不真的删，只是把不等于 fd 的元素往前挤，返回"新的逻辑结尾"迭代器；
+        vector::erase(新结尾, 真结尾)：把尾部垃圾真正抹掉。
+    return clients.size();
+}
+
+// 每个客户端一个线程：循环收消息 → 转发
+void handle_client(int client_fd,std::string name){//一个客户端的生命流程
+    char buffer[BUFFER_SIZE];
+
+    while(true){
+        ssize_t n=recv(client_fd,buffer,sizeof(buffer),0);// 阻塞着等这个客户端说话
+        if (n <= 0) break;  // 0=对方主动断开；-1=出错 → 都视为离开
+        std::string msg=name+":"+std::string(buffer,n)+"\n"; // 拼上"客户端N: "前缀
+        broadcast(msg,client_fd);//转发给其他所有人
+    }
+    close(client_fd);//释放fd
+    size_t left=remove_client(client_fd);//删掉自己
+    std::cout << name << " 已离开，当前在线 " << left << " 人" << std::endl;
+}
+
+//前台接待员，给每个客户端发放身份牌
+int main(){
+    //1.socket
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == -1) { perror("socket failed"); return 1; }
+    //复用端口
+    int reuse=1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    //设置地址
+    sockaddr_in server_addr{};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(PORT);
+
+    //2.绑定地址bind
+     if (bind(server_fd, (sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+        perror("bind failed"); close(server_fd); return 1;
+    }
+    //3.监听lisetn
+    if (listen(server_fd, 10) == -1) {
+        perror("listen failed"); close(server_fd); return 1;
+    }
+    std::cout << "聊天室服务器已启动，端口 " << PORT << std::endl;
+    //4.因为是多个客户端，我们就要循环接收accept
+    int client_count=0;//身份牌，累计进入人数
+    while(ture){
+        sockaddr_in client_addr{};//接收地址
+        socklen_t client_len=sizeof(client_addr);
+        //4.accept
+        int client_fd = accept(server_fd, (sockaddr*)&client_addr, &client_len);
+        if (client_fd == -1) { perror("accept failed"); continue; }
+
+        //接收了就要加进数组_动了数组就要锁
+        {
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            clients.push_back(client_fd);
+        }
+
+        int id=client_count++;// 每来一个人就加 1
+        std::string name = "客户端" + std::to_string(id);
+        std::cout << name << " 加入" << std::endl;
+
+        //为这个人开一个专属线程，然后主线程立刻回去继续 accept
+        //    detach()：线程结束后自动回收资源，不用 join
+        //主线程不能等某个客人离开（join 会卡住），所以让线程结束后自我回收
+        std::thread(handle_client, client_fd, name).detach();
+    }
+    close(server_fd);
+    return 0;
+}

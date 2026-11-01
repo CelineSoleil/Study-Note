@@ -1,0 +1,11 @@
+通过一个服务器，俩个客户端，多线程实现简化版无记忆的聊天室
+
+主线程：while(true) accept → 开线程
+handle_client线程① ── 专属伺候客户端A
+handle_client线程② ── 专属伺候客户端B
+共享资源：clients 列表（mutex 保护）
+
+TCP连接①                    TCP连接②
+client A                    client B
+主线程：键盘→send            主线程：键盘→send
+receiver线程：recv→打印      receiver线程：recv→打印
