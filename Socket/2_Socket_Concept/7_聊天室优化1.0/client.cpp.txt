@@ -1,0 +1,76 @@
+#include <iostream>
+#include <string>
+#include <atomic>
+#include <thread>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+constexpr int PORT = 2000;
+constexpr int BUFFER_SIZE = 1024;
+
+// 接收线程：打印服务器转发来的消息
+void receive_messages(int fd, std::atomic<bool>& running) {
+    char buffer[BUFFER_SIZE];
+    while (running) {
+        ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
+        if (n > 0) {
+            std::cout << "\r" << std::string(buffer, n)
+                      << "请输入消息：" << std::flush;
+        } else {
+            std::cout << "\n与服务器断开连接，按回车退出。" << std::endl;
+            running = false;
+            shutdown(fd, SHUT_RDWR);
+            break;
+        }
+    }
+}
+
+int main() {
+    // 1. 创建套接字（客户端不用 bind，系统会自动分配一个临时端口）
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == -1) { perror("socket failed"); return 1; }
+
+    // 2. 填服务器的地址（不是自己的！）
+    sockaddr_in server_addr{};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+    // inet_pton(地址族, "点分十进制IP字符串", 输出到哪)
+    // p = presentation（人看的字符串）→ n = network（二进制）
+    // 跨机器测试时把 127.0.0.1 换成服务器的真实 IP
+
+    // 3. 主动连接服务器（对应服务器那边的 accept）
+    if (connect(fd, (sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+        perror("connect failed"); close(fd); return 1;
+    }
+    std::cout << "已连接聊天室，输入 quit 退出" << std::endl;
+
+    // 【新增】协议约定：连上后第一条消息是昵称
+    std::cout << "请输入昵称：" << std::flush;
+    std::string nickname;
+    std::getline(std::cin, nickname);
+    send(fd, nickname.c_str(), nickname.size(), MSG_NOSIGNAL);
+    
+    // 4. 之后完全照抄你旧代码的思路：接收线程 + 主线程发送
+    std::atomic<bool> running{true};
+    std::thread receiver(receive_messages, fd, std::ref(running));
+
+    while (running) {
+        std::cout << "请输入消息：" << std::flush;
+        std::string message;
+        if (!std::getline(std::cin, message)) break;
+        if (!running) break;
+        if (message == "quit" || !send(fd, message.c_str(),
+                                       message.size(), MSG_NOSIGNAL)) {
+            running = false;
+            break;
+        }
+    }
+
+    running = false;
+    shutdown(fd, SHUT_RDWR);
+    if (receiver.joinable()) receiver.join();
+    close(fd);
+    return 0;
+}

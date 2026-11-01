@@ -1,0 +1,159 @@
+#include <iostream>
+#include <string>
+#include <map>
+#include <thread>
+#include <mutex>
+#include <algorithm>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+constexpr int PORT = 2000;
+constexpr int BUFFER_SIZE = 1024;
+
+std::map<int,std::string> clients;//fd->名称
+std::mutex clients_mutex;
+
+// 统一的发送出口
+void send_to(int fd, const std::string& msg) {
+    send(fd, msg.c_str(), msg.size(), MSG_NOSIGNAL);
+}
+
+// 群发：跳过 sender_fd；传 -1 表示不跳过任何人
+void broadcast(const std::string& msg, int sender_fd) {
+    std::lock_guard<std::mutex> lock(clients_mutex);
+    for (auto& [fd, name] : clients) {
+        if (fd == sender_fd) continue;
+        send_to(fd, msg);
+    }
+}
+
+// 私聊：按昵称找人，找到返回 true
+bool private_chat(const std::string& from, int from_fd,const std::string& target, const std::string& text) {
+    std::lock_guard<std::mutex> lock(clients_mutex);
+    for (auto& [fd, name] : clients) {
+        if (name == target) {
+            send_to(fd, "[私聊] " + from + ": " + text + "\n");
+            // 给发送者一个回执，让他知道发出去了
+            send_to(from_fd, "[你私聊 " + target + "] " + text + "\n");
+            return true;
+        }
+    }
+    return false;
+}
+
+// 去掉消息尾部的换行符（getline 发的消息不带，但保险起见）
+std::string trim_newline(std::string s) {
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    return s;
+}
+
+
+void handle_client(int client_fd) {
+    char buffer[BUFFER_SIZE];
+
+    // ===== 第一阶段：收昵称（协议约定的第一条消息）=====
+    ssize_t n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+    if (n <= 0) { close(client_fd); return; }   // 连昵称都没发就断了
+
+    buffer[n] = '\0';
+    std::string name = trim_newline(buffer);
+
+    for(auto &[fd,name1]:clients){
+        if(name1==name){
+            send_to(client_fd,"*** 昵称已存在，请重新连接并换一个昵称 ***\n");
+            close(client_fd);
+            return;
+        }
+    }
+
+    if (name.empty()) name = "无名氏";
+
+    // 登记进花名册（注册放在这里：此刻才知道名字）
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        clients[client_fd] = name;
+    }
+
+    std::cout << name << " 加入" << std::endl;
+    broadcast("*** " + name + " 加入了聊天室 ***\n", client_fd);
+    send_to(client_fd,
+            "*** 欢迎 " + name + "！私聊格式：@昵称 内容 ***\n");
+
+    // ===== 第二阶段：消息循环 =====
+    while (true) {
+        n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        if (n <= 0) break;
+
+        buffer[n] = '\0';
+        std::string text = trim_newline(buffer);
+        if (text.empty()) continue;
+
+        if (text[0] == '@') {
+            // ---- 私聊分支：解析 "@目标 内容" ----
+            size_t space = text.find(' ');
+            if (space == std::string::npos) {
+                send_to(client_fd, "*** 格式错误，应为：@昵称 内容 ***\n");
+                continue;
+            }
+            std::string target = text.substr(1, space - 1);  // @ 和空格之间是昵称
+            std::string msg    = text.substr(space + 1);     // 空格之后是内容
+
+            if (!private_chat(name, client_fd, target, msg)) {
+                send_to(client_fd, "*** " + target + " 不在线 ***\n");
+            }
+        } else {
+            // ---- 群发分支：和 10/27 一样 ----
+            std::string msg = name + ": " + text + "\n";
+            std::cout << msg << std::flush;
+            broadcast(msg, client_fd);
+        }
+    }
+
+    // ===== 离开：close → 除名 → 再广播（顺序不能乱）=====
+    close(client_fd);
+    size_t left;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        clients.erase(client_fd);         // map 按 key 删，一行搞定
+        left = clients.size();
+    }
+    broadcast("*** " + name + " 离开了聊天室，当前在线 "
+              + std::to_string(left) + " 人 ***\n", -1);
+    std::cout << name << " 已离开" << std::endl;
+}
+
+int main() {
+     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == -1) { perror("socket failed"); return 1; }
+
+    int reuse = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    sockaddr_in server_addr{};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(server_fd, (sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+        perror("bind failed"); close(server_fd); return 1;
+    }
+    if (listen(server_fd, 10) == -1) {
+        perror("listen failed"); close(server_fd); return 1;
+    }
+    std::cout << "聊天室服务器已启动，端口 " << PORT << std::endl;
+
+    while (true) {
+        sockaddr_in client_addr{};
+        socklen_t client_len = sizeof(client_addr);
+        int client_fd = accept(server_fd, (sockaddr*)&client_addr, &client_len);
+        if (client_fd == -1) { perror("accept failed"); continue; }
+
+        // 【变化】main 不再登记名册、不再广播——那时还不知道昵称
+        // 全部交给 handle_client 按顺序做：收昵称 → 登记 → 广播
+        std::thread(handle_client, client_fd).detach();
+    }
+
+    close(server_fd);
+    return 0;
+}
