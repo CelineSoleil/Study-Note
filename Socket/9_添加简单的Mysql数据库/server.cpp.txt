@@ -1,0 +1,339 @@
+#include <iostream>
+#include <string>
+#include <vector>
+#include <map>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <cstring>
+#include <cstdint>
+#include <csignal>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include<mysql/mysql.h>
+MYSQL* g_db=nullptr; // 全局唯一的数据库连接
+std::mutex db_mutex; // ★ MySQL 单个连接不是线程安全的！多个 handle 线程同时 INSERT 会撞车，所以必须锁住
+
+
+constexpr int PORT = 2000;
+constexpr uint32_t MAX_PACKET   = 1024 * 1024;  // 单条消息协议上限 1MB（防伪造长度头）
+constexpr size_t   MAX_CHAT_LEN = 4096;         // 聊天内容上限
+
+// ==================== 全局状态 ====================
+std::map<int, std::string> clients;   // fd -> 昵称（在线名单/路由表）
+std::mutex clients_mutex;             // 碰 clients 前必须拿这把锁
+std::atomic<bool> g_running{true};    
+int g_server_fd = -1;
+
+//启动时连接数据库
+bool db_init(){
+    g_db=mysql_init(nullptr);
+    if(!g_db)return false;
+
+    bool reconnect=true;
+    mysql_options(g_db,MYSQL_OPT_RECONNECT,&reconnect);
+    if(!mysql_real_connect(g_db,"127.0.0.1","chat","chat123","chatroom",3306,nullptr,0)){
+        std::cerr<<"MYSQL连接失败："<<mysql_error(g_db)<<std::endl;
+        return false;
+    }
+    mysql_set_character_set(g_db,"utf8mb4");  // 连接层也设 utf8mb4，防乱码
+    return true;
+}
+//消息入库（INSERT）
+void db_save_message(const std::string&sender,const std::string &content){
+    if(!g_db)return;
+    std::lock_guard<std::mutex> lock(db_mutex);
+    std::vector<char>es(2*sender.size()+1),ec(2*content.size()+1);
+    
+    mysql_real_escape_string(g_db,es.data(),sender.c_str(),sender.size());
+    mysql_real_escape_string(g_db,ec.data(),content.c_str(),content.size());
+
+//INSERT INTO messages (sender,content) VALUES ('小明', '大家好');
+    std::string sql="INSERT INTO messages (sender,content) VALUES ('";
+    sql+=es.data();//小明
+    sql+="', '";
+    sql+=ec.data();//大家好
+    sql+="')";
+    
+    if(mysql_query(g_db,sql.c_str())!=0){
+        std::cerr<<"入库失败"<<mysql_error(g_db)<<std::endl;
+    }
+}
+//启动时读出最近20条历史记录(SELECT)
+void db_load_history(int limit=20){
+    if(!g_db)return;
+    std::lock_guard<std::mutex> lock(db_mutex);
+//SELECT sender,content,created_at FROM message  ORDER BY id DESC LIMIT 20;
+    std::string sql="SELECT sender, content, created_at FROM messages ORDER BY id DESC LIMIT "+std::to_string(limit);
+
+    if(mysql_query(g_db,sql.c_str())!=0){
+        std::cerr<<"读取历史记录失败"<<mysql_error(g_db)<<std::endl;
+        return;
+    }
+
+    MYSQL_RES*res=mysql_store_result(g_db);
+    std::vector<std::string>lines;
+    MYSQL_ROW row;
+
+    while((row=mysql_fetch_row(res))){// row[0]=sender row[1]=content row[2]=时间
+        lines.push_back(std::string("[")+row[2]+"]"+row[0]+":"+row[1]);
+    }
+    mysql_free_result(res);// 结果集必须手动释放
+
+    std::cout<<"==========最近"<<lines.size()<<" 条聊天记录=======\n";
+    // DESC 查出来是新的在前，反转一下，按时间正序打印
+    for (auto it = lines.rbegin(); it != lines.rend(); ++it)
+        std::cout << *it << "\n";
+
+}
+
+
+// ==================== 字节流工具：定长收/发 ====================
+// send_all：len 字节不全部发完不罢休
+bool send_all(int fd, const char* data, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = send(fd, data + sent, len - sent, MSG_NOSIGNAL);
+        if (n <= 0) return false;
+        sent += n;
+    }
+    return true;
+}
+
+// recv_full：凑长度——len 字节不全部收齐不返回
+bool recv_full(int fd, char* buf, size_t len) {
+    size_t got = 0;                          // 记账：已凑多少
+    while (got < len) {                      // 没凑满就继续
+        ssize_t n = recv(fd,
+                         buf + got,          // 从上次结束的位置接着填
+                         len - got,          // 最多再要"还差的"
+                         0);
+        if (n <= 0) return false;            // 0=对方断开，-1=出错
+        got += n;
+    }
+    return true;
+}
+
+// ==================== 消息包协议：[4字节长度][正文] ====================
+bool send_packet(int fd, const std::string& body) {
+    uint32_t len = htonl((uint32_t)body.size());      // 长度转网络字节序
+    if (!send_all(fd, (char*)&len, 4)) return false;  // 先发头
+    return send_all(fd, body.data(), body.size());    // 再发正文
+}
+
+bool recv_packet(int fd, std::string& body) {
+    char header[4];
+    if (!recv_full(fd, header, 4)) return false;      // 第1步：凑满长度头
+    uint32_t len;
+    memcpy(&len, header, 4);
+    len = ntohl(len);                                  // 转回本机字节序
+    if (len == 0 || len > MAX_PACKET) return false;    // 长度离谱视为协议错误
+    body.resize(len);
+    return recv_full(fd, body.data(), len);            // 第2步：凑满正文
+}
+
+// ==================== 转发 ====================
+void send_to(int fd, const std::string& msg) { 
+    send_packet(fd, msg); 
+}
+
+// 群发：sender_fd 传 -1 表示不跳过任何人
+void broadcast(const std::string& msg, int sender_fd) {
+    std::vector<int> dead;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        for (auto& [fd, name] : clients) {
+            if (fd == sender_fd) continue;
+            if (!send_packet(fd, msg)) dead.push_back(fd);  // 发不出去=死连接
+        }
+        for (int fd : dead) {
+            // 只 shutdown 不 close：
+            // 1) 唤醒那个线程里阻塞的 recv，让 handle_client 自己去 close
+            //    （避免这里 close 后 fd 被复用，线程再 close 误伤新人）
+            // 2) 除名后该线程会补发一条正式的"离开"广播
+            shutdown(fd, SHUT_RDWR);
+            clients.erase(fd);
+        }
+    }
+}
+
+// 私聊：按昵称找人
+bool private_chat(const std::string& from, int from_fd,
+                  const std::string& target, const std::string& text) {
+    std::lock_guard<std::mutex> lock(clients_mutex);
+    for (auto& [fd, name] : clients) {
+        if (name == target) {
+            send_to(fd, "[私聊] " + from + ": " + text + "\n");
+            send_to(from_fd, "[你私聊 " + target + "] " + text + "\n");
+            return true;
+        }
+    }
+    return false;
+}
+
+void on_sigint(int) {
+    g_running = false;
+    close(g_server_fd);
+}
+
+// ==================== 每个客户端的专属线程 ====================
+void handle_client(int client_fd) {
+    // ---- 第1阶段：收昵称（协议约定第一个包是昵称）----
+    std::string name;
+    if (!recv_packet(client_fd, name)) { close(client_fd); return; }
+
+    if (name.empty() || name.size() > 32 ||
+        name.find('@') != std::string::npos ||
+        name.find(' ')  != std::string::npos) {
+        send_packet(client_fd, "*** 昵称不合法（不能含@和空格，最多32字符），连接关闭 ***\n");
+        close(client_fd);
+        return;
+    }
+
+    // 重名处理 + 登记
+    std::string final_name = name;
+    std::string online_list;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        int suffix = 2;
+        bool taken;
+        do {
+            taken = false;
+            for (auto& [fd, n] : clients)
+                if (n == final_name) { taken = true; break; }
+            if (taken) final_name = name + std::to_string(suffix++);
+        } while (taken);
+
+        clients[client_fd] = final_name;
+
+        for (auto& [fd, n] : clients) online_list += n + " ";
+    }
+
+    if (final_name != name)
+        send_to(client_fd, "*** 昵称已被占用，你已改名为 " + final_name + " ***\n");
+
+    std::cout << final_name << " 加入" << std::endl;
+    broadcast("*** " + final_name + " 加入了聊天室 ***\n", client_fd);
+    send_to(client_fd, "*** 欢迎 " + final_name +
+            "！私聊：@昵称 内容；查在线：/list ***\n"
+            "*** 当前在线：" + online_list + "***\n");
+
+    // ---- 第2阶段：消息循环 ----
+    while (true) {
+        std::string text;
+        if (!recv_packet(client_fd, text)) break;   // 收不齐=对方走了
+
+        if (text.empty()) continue;
+        if (text.size() > MAX_CHAT_LEN) {
+            send_to(client_fd, "*** 消息过长（上限4096字符） ***\n");
+            continue;
+        }
+
+        if (text == "/list") {                      // 查询在线名单
+            std::string list;
+            {
+                std::lock_guard<std::mutex> lock(clients_mutex);
+                list = "*** 在线 " + std::to_string(clients.size()) + " 人：";
+                for (auto& [fd, n] : clients) list += n + " ";
+                list += "***\n";
+            }
+            send_to(client_fd, list);
+        } else if (text[0] == '@') {                // 私聊
+            size_t space = text.find(' ');
+            if (space == std::string::npos) {
+                send_to(client_fd, "*** 格式错误，应为：@昵称 内容 ***\n");
+                continue;
+            }
+            std::string target = text.substr(1, space - 1);
+            std::string msg    = text.substr(space + 1);
+            if (!private_chat(final_name, client_fd, target, msg))
+                send_to(client_fd, "*** " + target + " 不在线 ***\n");
+            else{
+                 //私聊也入库
+            db_save_message(final_name+"->"+target,msg);//标明用户
+            }
+
+        } else {                                    // 群发
+            std::string msg = final_name + ": " + text + "\n";
+            std::cout << msg << std::flush;
+            broadcast(msg, client_fd);
+
+            //群发的时候顺便把消息入库
+            db_save_message(final_name,text);
+
+        }
+    }
+
+    // ---- 第3阶段：离开（close → 除名 → 广播）----
+    close(client_fd);
+    size_t left;
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        clients.erase(client_fd);
+        left = clients.size();
+    }
+    broadcast("*** " + final_name + " 离开了聊天室，当前在线 "
+              + std::to_string(left) + " 人 ***\n", -1);
+    std::cout << final_name << " 已离开" << std::endl;
+}
+
+int main() {
+    g_server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (g_server_fd == -1) { perror("socket failed"); return 1; }
+
+    int reuse = 1;
+    setsockopt(g_server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    sockaddr_in server_addr{};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(g_server_fd, (sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+        perror("bind failed"); close(g_server_fd); return 1;
+    }
+    if (listen(g_server_fd, 10) == -1) {
+        perror("listen failed"); close(g_server_fd); return 1;
+    }
+
+    signal(SIGINT, on_sigint);   // Ctrl+C关闭
+    std::cout << "聊天室服务器已启动，端口 " << PORT << std::endl;
+
+    //连接数据库
+    if (db_init()) {
+        std::cout << "MySQL 已连接" << std::endl;
+        db_load_history();          // ★ 启动时读出历史
+    } else {
+        std::cout << "MySQL 未连接，聊天记录将不会保存" << std::endl;
+    }
+
+    while (g_running) {
+        sockaddr_in client_addr{};
+        socklen_t client_len = sizeof(client_addr);
+        int client_fd = accept(g_server_fd, (sockaddr*)&client_addr, &client_len);
+        if (client_fd == -1) {
+            if (!g_running) break;      // Ctrl+C 触发的关闭
+            perror("accept failed");
+            continue;
+        }
+        std::thread(handle_client, client_fd).detach();
+    }
+
+    // 优雅收尾：通知所有人，再断开
+    broadcast("*** 服务器关闭 ***\n", -1);
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        for (auto& [fd, name] : clients) close(fd);
+        clients.clear();
+    }
+    std::cout << "服务器已退出。" << std::endl;
+
+    //结束记得关闭数据库
+    if (g_db) {
+        mysql_close(g_db);
+        g_db = nullptr;
+    }
+
+    return 0;
+}

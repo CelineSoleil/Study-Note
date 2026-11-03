@@ -1,0 +1,118 @@
+#include <iostream>
+#include <string>
+#include <atomic>
+#include <thread>
+#include <cstring>
+#include <cstdint>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+constexpr int PORT = 2000;
+constexpr uint32_t MAX_PACKET = 1024 * 1024;
+
+std::atomic<bool> running{true};
+
+// ==================== 字节流工具（与服务器同一套协议）=W===================
+bool send_all(int fd, const char* data, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = send(fd, data + sent, len - sent, MSG_NOSIGNAL);
+        if (n <= 0) return false;
+        sent += n;
+    }
+    return true;
+}
+
+bool recv_full(int fd, char* buf, size_t len) {
+    size_t got = 0;
+    while (got < len) {
+        ssize_t n = recv(fd, buf + got, len - got, 0);
+        if (n <= 0) return false;
+        got += n;
+    }
+    return true;
+}
+
+bool send_packet(int fd, const std::string& body) {
+    uint32_t len = htonl((uint32_t)body.size());
+    if (!send_all(fd, (char*)&len, 4)) return false;
+    return send_all(fd, body.data(), body.size());
+}
+
+bool recv_packet(int fd, std::string& body) {
+    char header[4];
+    if (!recv_full(fd, header, 4)) return false;
+    uint32_t len;
+    memcpy(&len, header, 4);
+    len = ntohl(len);
+    if (len == 0 || len > MAX_PACKET) return false;
+    body.resize(len);
+    return recv_full(fd, body.data(), len);
+}
+
+// ==================== 接收线程：打印服务器转发来的消息 ====================
+void receive_messages(int fd) {
+    std::string msg;
+    while (running) {
+        if (!recv_packet(fd, msg)) {
+            // 修复：running 已是 false 说明是本地 quit，不报错
+            if (running)
+                std::cout << "\n与服务器断开连接，按回车退出。" << std::endl;
+            running = false;
+            shutdown(fd, SHUT_RDWR);
+            break;
+        }
+        std::cout << "\r" << msg << "请输入消息：" << std::flush;
+    }
+}
+
+int main() {
+    // 1. 创建套接字（客户端不 bind，系统分配临时端口）
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == -1) { perror("socket failed"); return 1; }
+
+    // 2. 填服务器地址
+    sockaddr_in server_addr{};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+
+    // 3. 连接
+    if (connect(fd, (sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+        perror("connect failed"); close(fd); return 1;
+    }
+
+    // 4. 协议约定：第一个包是昵称
+    std::cout << "请输入昵称：" << std::flush;
+    std::string nickname;
+    if (!std::getline(std::cin, nickname)) { close(fd); return 1; }
+    if (!send_packet(fd, nickname)) { perror("send nickname"); close(fd); return 1; }
+
+    std::cout << "已连接聊天室，quit 退出，/list 查在线，@昵称 私聊" << std::endl;
+
+    // 5. 一个线程收，主线程发
+    std::thread receiver(receive_messages, fd);
+
+    while (running) {
+        std::cout << "请输入消息：" << std::flush;
+        std::string message;
+        if (!std::getline(std::cin, message)) break;
+        if (!running) break;
+        if (message.empty()) continue;
+        if (message == "quit") { running = false; break; }
+        if (!send_packet(fd, message)) {
+            std::cout << "发送失败，连接已断开。" << std::endl;
+            running = false;
+            break;
+        }
+    }
+
+    // 6. 先 join 后清理
+    running = false;    
+    shutdown(fd, SHUT_RDWR);
+    if (receiver.joinable()) receiver.join();
+    close(fd);
+    std::cout << "客户端已退出。" << std::endl;
+    return 0;
+}

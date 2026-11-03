@@ -1,0 +1,128 @@
+一、按照mysql(Linux操作系统)
+    sudo apt update
+    sudo apt install mysql-server default-libmysqlclient-dev
+                     (数据库)       (C/C++连接用的开发库，头文件+链接库)
+    sudo systemctl start mysql #启动服务
+    sudo systemctl enable mysql #开机自启动
+
+二、建库建表
+    1.进入MySQL控制台
+        sudo mysql
+    2.先给程序创建一个专属账号（尽量不要用root）
+        1.建库：指定utf8mb6
+            CREATE DATEBASE chatroom CHARACTER SET utf8mb6;
+        2.创建专用用户char，密码chat123，只准本机连
+            CREATE USER 'chat'@'localhost' IDENTIFIED BY 'chat123';
+            GRANT ALL PRIVILEGES ON chatroom.* TO 'chat'@'localhost';
+            FLUSH PRIVILEGES;
+
+            USE chatroom;
+        3.建表
+            CREATE TABLE messages(
+                id INT AUTO_INCREMENT PRIMARY KEY, --自增主键：每条消息一个编号
+                sender VARCHAR(64) NOT NULL, --发送者名称
+                content TEXT NOT NULL, --消息内容
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP --入库时间，默认自动填
+            );
+            exit;
+
+            --created_at 设了默认值，INSERT 时不用管它，数据库自动填当前时间
+
+            用刚建的用户验证一下能不能进
+                mysql -u chat -pchat123 chatroom
+
+                模拟聊天
+                1.小明说大家好
+                    INSERT INTO messages(sender,content) VALUES ('小明','大家好');
+                2.查询最近的记录
+                    SELECT sender,content,created_at FROM messages ORDER BY id DESC LIMIT 20;
+                    结果：
+                    +--------+-----------+---------------------+
+                    | sender | content   | created_at          |
+                    +--------+-----------+---------------------+
+                    | 小明   | 大家好    | 2026-11-03 09:12:27 |
+                    +--------+-----------+---------------------+
+                    1 row in set (0.00 sec)
+
+三、Mysql C API 五个函数
+    1.c++连接mysql用的官方c api和socket差不多
+        mysql_init          =socket()   创建
+        mysql_real_connect  =connect()  连接数据库
+        mysql_query         =send()     发送sql
+        mysql_store_result  =recv()     接收查询结果
+        mysql_close         =close()    关闭
+
+    2.代码解析
+        MYSQL*mysql_init(NULL);
+            //参数null:让他自己分配一个连接句柄，返回值MYSQL*后面都要带上
+        
+        MYSQL*mysql_real_connect(
+            MYSQL*mysql,        //mysql_init给的句柄
+            const char*host,    //'127.0.0.1'目前数据在本机
+            const char*user,    //'chat'
+            const char*passwd,  //'chat123'
+            const char*db,      //'chatroom'数据库
+            unsigned int port,  //3306,mysql默认接口
+            const char*unix_socket,//本机套接字路径，TCP就填nullptr
+            unsigned long flags 
+        );//失败返回nullptr，失败原因在mysql_error(g_db)看
+
+        int mysql_query(MYSQL*mysql,const char*sql);
+            // 执行一条 SQL 字符串。返回 0=成功，非0=失败（INSERT/CREATE 只看这个返回值）
+
+        MYSQL_RES* mysql_store_result(MYSQL* mysql);
+            // 只有 SELECT 需要：把查询到的所有行一次性取到本地内存
+            // 用完必须 mysql_free_result()，否则内存泄漏
+        
+        MYSQL_ROW mysql_fetch_row(MYSQL_RES*res);
+            // 从结果集里取下一行，读完返回 nullptr
+            // MYSQL_ROW 本质是 char** ：row[0] 是第1列，row[1] 是第2列……都是字符串
+
+        //important,删掉消息里面的单引号，反斜杠等能操作数据库的字符，保证数据库安全，防止SQL注入
+        unsigned long mysql_real_escape_string(
+            MYSQL* mysql, char* to,        // 转义结果写到 to（要 2*原长+1 的缓冲区）
+            const char* from, unsigned long length  // 原始字符串
+        );// 作用：把内容里的单引号、反斜杠等特殊字符转义掉。
+
+
+四、服务器server修改(客户端代码不用修改)
+    1.加入mysql头文件
+        #include <mysql/mysql.h>
+        MYSQL* g_db = nullptr;      // 全局唯一的数据库连接
+        std::mutex db_mutex;        //锁住
+    
+    2.加数据库函数（链接：init，入库：insert，查询：select）
+        bool db_init() ;
+        void db_save_message(const std::string& sender, const std::string& content);
+        void db_load_history(int limit = 20);
+
+    3.修改server源代码
+        1.在lisetn监听和accept之间连接数据库init
+            db_init()
+        2.在main结尾，服务器关闭记得也断开数据库
+            mysql_close(g_db)
+        3.消息入库，在调用私聊和群发函数的位置（发消息的时候）添加入库函数
+                db_save_message(final_name, text);
+                db_save_message(final_name + "->" + target, msg);
+
+五、编译（链接库变了）
+
+    g++ [用什么标准] [要不要警告] 谁.cpp -o 叫什么 [用了哪些库：-pthread、mysql]
+
+    g++ -std=c++17 -Wall server.cpp -o server -pthread $(mysql_config --cflags --libs)
+    编译器 语言标准  警告  源文件      输出名    线程库     mysql的头文件和库路径
+        相当于：g++ -std=c++17 -Wall server.cpp -o server -pthread \
+                    -I/usr/include/mysql \
+                    -L/usr/lib/x86_64-linux-gnu -lmysqlclient
+
+    g++ -std=c++17 -Wall client.cpp -o client -pthread
+        //mysql_config --cflags --libs 会自动吐出正确的头文件路径
+
+六、运行服务器查看
+    ./server
+    ./client
+    登录俩个客户端测试
+    在创建一个cmd窗口，登录mysql查看
+    mysql -u chat -pchat123 chatroom;
+    //查询全部信息
+    select * from messages;
