@@ -1,0 +1,93 @@
+一、RokcerMQ是什么？——回顾
+    ——RocketMQ 由四个角色组成，用"快递系统"类比：
+
+    生产者Producer      消息队列本体        消费者Consumer
+    (寄快递的人)                            （收快递的人）
+        ⬇                                       ⬆
+    ------------------------- |                  ⬆
+    Broker(快递仓库/中转站)    |➡➡➡➡➡➡➡➡➡➡⬆
+    真正存消息的地方，端口10911 |
+    ------------------------- |
+        ⬆
+        ⬆启动时先去登记
+        ⬆
+    -------------------------
+    NameServer(通讯录/前台)
+    记录”哪个Broker在哪“，9876
+    -------------------------
+
+        为什么要NameServer：因为Producer不知道仓库在哪，要先问前台（9876）
+
+二、Docker部署（俩个容器）
+    RocketMQ 要跑两个东西：NameServer 和 Broker
+        1.拉镜像
+            docker pull apache/rocketmq:4.9.4
+                #           ↑ 这次有"作者名/软件名"的格式：apache 出品
+                #             不是官方 library 镜像，所以走加速站拉取时要写全名
+                #           4.9.4 是经典稳定版，教程资料最多
+        
+        2.尊卑Broker配置文件
+            mkdir -p ~/rocketmq/conf
+            nano ~/rocketmq/conf/broker.conf
+
+            粘贴：
+                brokerClusterName = DefaultCluster
+                brokerName = broker-a
+                brokerId = 0                  # 0=主节点（master），>0 是从节点
+                namesrvAddr = 127.0.0.1:9876  # 去哪个 NameServer 登记
+                brokerIP1 = 127.0.0.1         # 登记时告诉别人的"我的地址"
+                autoCreateTopicEnable = true  # ★ 关键：允许自动创建 Topic
+                                              #   不开的话，demo 发消息会报"topic不存在"
+        
+        3.起NameServer容器
+            docker run -d --name rmqnamesrv --network host \
+                -e "JAVA_OPT_EXT=-Xms256M -Xmx256M -Xmn128M" \
+                apache/rocketmq:4.9.4 sh manamesrv
+        
+            #   --network host：容器直接共用你电脑的网络，不再隔离、也不需要 -p 端口映射
+            #   -e "JAVA_OPT_EXT=..."：往容器里传环境变量。RocketMQ 是 Java 写的，默认想吃 8G 内存
+            #   sh mqnamesrv：镜像名后面的部分是"容器启动后执行什么命令"——启动 NameServer 的脚本。
+
+        4.起Broker容器
+            docker run -d --name rmqbroker --network host \
+                -e "JAVA_OPT_EXT=-Xms256M -Xmx256M -Xmn128M" \
+                -v ~/rocketmq/conf/broker.conf:/home/rocketmq/conf/broker.conf \
+                apache/rocketmq:4.9.4 sh mqbroker -c /home/rocketmq/conf/broker.conf
+
+            #   -v（volume，挂载）：
+                    -v ~/rocketmq/conf/broker.conf : /home/rocketmq/conf/broker.conf
+                        └─ 你电脑上的文件（左边）      └─ 容器里看到的路径（右边）
+
+            #   把你写的配置文件"映射"进容器。这样改配置不用进容器，在宿主机改完重启容器即可。
+                -v 是 Docker 里仅次于 -p 的高频参数：之前是"端口映射"，现在是"文件映射"，思想相同——在隔离的墙上开洞。
+                -c /home/rocketmq/conf/broker.conf：让 mqbroker 启动时读这个配置。
+
+        5.验证俩个容器都活着
+            docker ps
+            # rmqnamesrv 和 rmqbroker 两个，状态都是 Up
+
+            docker logs rmqnamesrv | tail -5
+            # The Name Server boot success...
+
+            docker logs rmqbroker | tail -5
+            # The broker ... boot success. 以及 register to name server ... OK
+
+                如果 broker 挂了，先 docker logs rmqbroker 看原因，大概率内存不足（把 -Xmx256M 再调小）或配置文件路径写错。
+
+三、生产者/消费者demo（A扔队列，B慢慢取）
+    1.终端 1：先启动消费者（它会阻塞着等消息）
+        docker exec -it rmqbroker bash          # 钻进 broker 容器
+        # 进了容器后：
+        export NAMESRV_ADDR=127.0.0.1:9876      # 告诉 demo 程序前台在哪
+        sh tools.sh org.apache.rocketmq.example.quickstart.Consumer
+        看到 Consumer Started. 就说明它在等了。终端别关，让它挂着。
+
+    2.终端 2：启动生产者（扔 1000 条消息）
+        新开一个终端：
+        docker exec -it rmqbroker bash
+        export NAMESRV_ADDR=127.0.0.1:9876
+        sh tools.sh org.apache.rocketmq.example.quickstart.Producer
+        生产者会瞬间刷出 1000 条 SendResult [sendStatus=SEND_OK, ...]，然后自动退出
+    
+    3.回到终端 1：
+        消费者那边正在一条条打印：

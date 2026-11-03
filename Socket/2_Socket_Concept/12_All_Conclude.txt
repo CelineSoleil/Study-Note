@@ -1,0 +1,13 @@
+Linux/C++ 基础  ──►     Socket（六步流程、TCP 字节流）  ──►     多线程（thread/mutex/atomic）
+      │                     │
+      ▼                     ▼
+  g++ 编译参数          协议设计（长度前缀、昵称约定、@私聊）
+      │                     │
+      ▼                     ▼
+  MySQL（DDL/DML/DQL、C API、转义防注入）
+      │
+      ▼
+  Docker（镜像/容器、-p/-v/-e/--network）
+      │
+      ▼
+  Redis（内存KV、缓存定位）──► RocketMQ（异步、解耦、削峰）
