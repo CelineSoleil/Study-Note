@@ -1,0 +1,111 @@
+一、Docker、redis和rocketMQ概念
+    1.Redis:”内存里面的MySQL“
+        redis是把数据放在内存里面的键值（key-value）数据库
+            对比：      mysql                   Redis
+            数据放哪：硬盘（持久）              内存（快，默认重启消失）
+            数据模型：表（行列，结构严谨）       key->value（像一个巨大的map）
+            速度：    毫秒级                    微秒级（快100倍）
+            用途：    账单，订单，聊天记录       缓存，在线状态，验证码，排行榜
+
+    2.RocketMQ：”系统之间的快递中转站“
+        消息队列，让俩个程序不直接通话，而是通过”队列“传递消息。
+
+            为什么要中转？用聊天室举例：现在 db_save_message 是同步的——发消息的人要等 MySQL 写完才完事。
+            如果某天每秒一万条消息，MySQL 扛不住，聊天就会卡。改成 RocketMQ 之后：
+            --------------------------------------------------------------------
+                发消息 → 扔进 RocketMQ 队列（微秒级，立刻返回）→ 用户感觉"秒发"
+                            ↓ 后台慢慢消费
+                    另一个程序从队列里取出来 → 写入 MySQL
+            --------------------------------------------------------------------
+        三大作用：
+            解耦：（发消息和入库互不知情）
+            削峰：（洪水先进队列排队）
+            异步：（不用等）
+    
+    3.Dokcer：”软件的集装箱“
+        换电脑要重新配置mysql：apt install->该配置->建用户等
+
+        Dokcer的思路：把”软件+运行环境+配置“打包成一个镜像，任何按照docker的机器，一条命令就能跑起来一个容器。
+            ——一个和系统隔离的小环境，里面的软件以为自己独占一台电脑。
+        
+            镜像：image     =体制下的设计图纸（redis 官方版）
+            容器：container =按图纸造出来的一个市级箱子（跑起来的redis）
+
+        装 Redis 不用编译不用配置，docker run 一行搞定。
+
+二、Dokcer实战（Linux系统）
+    1.安装doker
+        sudo apt update
+        sudo apt install docker.io
+        sudo systemctl start docker
+        sudo systemctl enable docker
+
+            权限问题：安装后docker ps会报错，因为docker要root权限
+                方法：1.每条指令加sudo
+                        sudo docker ps
+                     2.把自己加进docker用户组(推荐)
+                        sudo usermod -aG docker $USER
+                            //记得重启终端刷新状态才docker ps
+    
+    2.下载镜像docker pull（记得开vpn，或者换国内镜像源）
+        docker pull redis
+                     ↑ 镜像名。不指定版本号默认拉最新版（等价于 redis:latest）
+        拉取后
+        docker images
+            看看本地有哪些镜像
+
+    3.用镜像造一个容器跑起来docker run
+        1.docker run -d --name myredis -p 6379:6379 redis
+            #   -d              detach，后台运行。不加的话容器占住你的终端，Ctrl+C 就把它关了
+            #   --name myredis  给容器起名字。不起名 Docker 会随机分一个怪名（如 sleepy_euler）
+            #   -p 6379:6379    端口映射：【你电脑的6379】→【容器里的6379】
+            #                   Redis 默认监听 6379。容器是隔离环境，不映射的话你外面连不进去
+            #                   格式永远是 -p 宿主机端口:容器内端口
+            #   redis           用哪个镜像（刚才 pull 的那个）
+
+        2.看是否跑起来：docker ps
+            dokcer ps
+                容器ID | 镜像 | 创建时间 | 状态(Up xx秒) | 端口映射 | 名字
+            dokcer ps -a
+                把”已停止“的容器也列出来
+        
+        3.进入容器操作：docker exec
+            docker exec -it myredis redis-cli --raw
+                #   -it        两个参数的合体：
+                #              -i = interactive，保持输入畅通（你能往里打字）
+                #              -t = 分配一个伪终端（有提示符、有回显）
+                #              要"进去交互"就必须带 -it，缺一个都不好用
+                #   myredis    进哪个容器（之前起的名字）
+                #   redis-cli  进去之后执行什么程序——Redis 自带的命令行客户端
+                #   --raw 的意思是"别转义，把原始字节直接吐给终端"
+                
+        4.Redis里的set/get
+            127.0.0.1:6379> SET name "小明"        # 存：key 是 name，value 是 小明
+            OK
+            127.0.0.1:6379> GET name               # 取
+            "小明"
+            127.0.0.1:6379> SET online:xiaoming 1  # Redis 惯例：key 用冒号分层，像路径
+            OK
+            127.0.0.1:6379> KEYS *                 # 列出所有 key
+            1) "name"
+            2) "online:xiaoming"
+            127.0.0.1:6379> DEL name               # 删
+            (integer) 1                            # 删掉了 1 个
+            127.0.0.1:6379> GET name
+            (nil)                                  # 没了
+            127.0.0.1:6379> exit                   # 退出 redis-cli（容器还在跑）
+
+三、验证”容器真的是个独立环境“
+    在主机查看有没有这个程序
+        which redis-cli# 输出空——你电脑根本没装 Redis！
+
+        # 但容器里刚才明明用了 redis-cli。结论：
+        # Redis 只活在容器里，你的系统干干净净，卸载也只需删容器
+        
+
+其他指令：
+docker stop myredis    # 停容器（数据还在容器里）
+docker start myredis   # 再启动
+docker rm myredis      # 删容器（要先 stop；删了数据就没了）
+docker logs myredis    # 看容器日志（排查问题用）
+docker exec -it myredis bash   # 进容器的 shell 里随便逛（exit 退出）
